@@ -45,59 +45,84 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # ------------------------------------------------------------------------------
 # Compiler flags and warnings
 # ------------------------------------------------------------------------------
-if(MSVC)
 
-  # Common compiler optimization flags
+# MSVC (Windows) ------------------------
+if(MSVC)
   set(MSVC_OPT_FLAGS
-    /O2        # optimize for maximum speed
-    /Oi        # replace CRT calls with intrinsics
-    /GL        # enable whole-program optimization
-    /Gy        # enable function-level linking
-    /GF        # enable read-only string pooling
-    /Oy        # omit frame pointers for extra register
-    /EHsc      # enable C++ exception handling (no SEH)
+    /O2        # optimize for speed
+    /Oi        # use intrinsics
+    /GL        # whole program optimization
+    /Gy        # function-level linking
+    /GF        # string pooling
+    /Oy        # omit frame pointer
+    /EHsc      # C++ exceptions only
     /GR-       # disable RTTI
   )
 
-  # Append platform-specific flags
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
-    list(APPEND MSVC_OPT_FLAGS
-      /arch:AVX2   # target AVX2 + FMA on x64 platforms
-    )
+    list(APPEND MSVC_OPT_FLAGS /arch:AVX2)
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64")
-    list(APPEND MSVC_OPT_FLAGS
-      /arch:ARM64 # use ARM64 (NEON) intrinsics on ARM64
-    )
+    list(APPEND MSVC_OPT_FLAGS /arch:ARM64)
   endif()
 
-  # Linker flags
   set(MSVC_LINK_FLAGS
-    /LTCG      # enable link-time code generation
-    /OPT:REF   # remove unreferenced functions/data
-    /OPT:ICF   # fold identical COMDAT sections
+    /LTCG       # link-time code generation
+    /OPT:REF    # eliminate unused code
+    /OPT:ICF    # fold identical functions
   )
 
-
-  # Attach optimization flags for the non-debug configurations
   foreach(flag IN LISTS MSVC_OPT_FLAGS)
     target_compile_options(${PROJECT_NAME} PRIVATE
       $<$<NOT:$<CONFIG:Debug>>:${flag}>
     )
   endforeach()
 
-  # Likewise for link-time flags
-  foreach(lflag IN LISTS MSVC_LINK_FLAGS)
+  foreach(flag IN LISTS MSVC_LINK_FLAGS)
     target_link_options(${PROJECT_NAME} PRIVATE
-      $<$<NOT:$<CONFIG:Debug>>:${lflag}>
+      $<$<NOT:$<CONFIG:Debug>>:${flag}>
     )
   endforeach()
 
   # Warnings
   target_compile_options(${PROJECT_NAME} PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+  
 endif()
 
+# Clang ------------------------
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set(GCC_CLANG_OPT_FLAGS
+    -O3                  # optimize for speed
+    -ffast-math          # aggressive FP optimization
+    -march=native        # use all local CPU instructions
+    -flto                # link-time optimization
+    -fstrict-aliasing    # assume strict aliasing rules
+    -fno-rtti            # disable RTTI (if not used)
+    -fno-exceptions      # disable exceptions (if not used)
+    -fvisibility=hidden  # hidden by default
+    -fdata-sections      # allow section GC
+    -ffunction-sections  # allow section GC
+  )
+
+  set(GCC_CLANG_LINK_FLAGS
+    -flto
+    -Wl
+  )
+
+  foreach(flag IN LISTS GCC_CLANG_OPT_FLAGS)
+    target_compile_options(${PROJECT_NAME} PRIVATE
+      $<$<NOT:$<CONFIG:Debug>>:${flag}>
+    )
+  endforeach()
+
+  foreach(flag IN LISTS GCC_CLANG_LINK_FLAGS)
+    target_link_options(${PROJECT_NAME} PRIVATE
+      $<$<NOT:$<CONFIG:Debug>>:${flag}>
+    )
+  endforeach()
+
+  # Warnings
+  target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 # ------------------------------------------------------------------------------
 # IDE Specific Settings
