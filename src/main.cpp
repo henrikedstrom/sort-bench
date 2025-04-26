@@ -1,6 +1,6 @@
-// sort_bench.cpp: Compares the performance of a custom 3-pass radix sort against std::sort.
-// Generates test inputs, runs both algorithms over multiple trials, and reports throughput in M elements/sec.
-//
+// sort_bench.cpp
+// Benchmarks std::sort vs RadixSort11 over a range of input sizes,
+// for both random and mostly-sorted inputs.
 
 // Standard Library Headers
 #include <algorithm>
@@ -15,154 +15,144 @@
 #include "radix.h"
 
 // ------------------------------------------------------------------------------------------------
-// Configuration
+// Config parameters
 
-struct Config {
-  static constexpr uint32_t NumElements = 1 * 1024 * 1024;
-  static constexpr uint32_t NumTrials = 10;
-  static constexpr bool CheckCorrectness = true;
-  static constexpr bool MostlySorted = false;
-};
+static constexpr uint32_t kMaxTotal = 16 * 1024 * 1024; // cap N * trials to 16M
+static constexpr uint32_t kMaxTrials = 128;
+static constexpr bool kCheckCorrect = true; // Verify sorting order
 
 // ------------------------------------------------------------------------------------------------
 // Utility functions
 
-void generateInputElements(std::vector<std::vector<float>>& inputs) {
-  std::mt19937 rng(1234);
-  std::uniform_real_distribution<float> dist(-16.0f, 16.0f);
+// generate 'trials' independent vectors of length 'N'
+// if 'mostlySorted' is true, start with a sorted list and then displace some (default 10%) of the elements
+void generateInputs(uint32_t trials, uint32_t N, bool mostlySorted, std::vector<std::vector<float>> &out)
+{
+    std::mt19937 rng(1234);
+    std::uniform_real_distribution<float> dist(-16.0f, 16.0f);
+    out.assign(trials, std::vector<float>(N));
 
-  inputs.resize(Config::NumTrials);
+    if (mostlySorted)
+    {
+        uint32_t offsetRange = uint32_t(N * 0.15f); // +/- 15% of N
+        uint32_t displace = uint32_t(N * 0.10f);    // displace 10% of the elements
+        for (uint32_t t = 0; t < trials; ++t)
+        {
+            auto &v = out[t];
+            for (uint32_t i = 0; i < N; ++i)
+            {
+                v[i] = dist(rng);
+            }
 
-  if (Config::MostlySorted) {
-    uint32_t offsetRange =
-        uint32_t(Config::NumElements * 0.15f);  // 15% offset
-    uint32_t numToDisplace =
-        uint32_t(Config::NumElements * 0.10f);  // 10% of total
+            // start with a sorted list
+            std::sort(v.begin(), v.end());
 
-    for (uint32_t t = 0; t < Config::NumTrials; ++t) {
-      inputs[t].resize(Config::NumElements);
-
-      // Start with a perfectly sorted array
-      std::vector<std::pair<float, uint32_t>> sortedPairs(Config::NumElements);
-      for (uint32_t i = 0; i < Config::NumElements; ++i) {
-        sortedPairs[i] = {dist(rng), i};
-      }
-      std::sort(sortedPairs.begin(), sortedPairs.end());
-
-      // Copy into input set
-      for (uint32_t i = 0; i < Config::NumElements; ++i) {
-        inputs[t][i] = sortedPairs[i].first;
-      }
-
-      // Displace 'numToDisplace' of them slightly
-      for (uint32_t j = 0; j < numToDisplace; ++j) {
-        uint32_t idx = rng() % Config::NumElements;
-
-        int32_t offset = int32_t(rng() % (2 * offsetRange + 1)) -
-                         int32_t(offsetRange);  // [-range, +range]
-        int32_t swapWith = int32_t(idx) + offset;
-
-        // Clamp to valid range
-        if (swapWith < 0) swapWith = 0;
-        if (swapWith >= int32_t(Config::NumElements))
-          swapWith = Config::NumElements - 1;
-
-        // Swap in both input sets
-        std::swap(inputs[t][idx], inputs[t][swapWith]);
-      }
+            // displace
+            for (uint32_t j = 0; j < displace; ++j)
+            {
+                uint32_t i = rng() % N;
+                int32_t off = int32_t(rng() % (2 * offsetRange + 1)) - int32_t(offsetRange);
+                uint32_t k = uint32_t(std::clamp<int32_t>(i + off, 0, int32_t(N - 1)));
+                std::swap(v[i], v[k]);
+            }
+        }
     }
-  } else {
-    for (uint32_t t = 0; t < Config::NumTrials; ++t) {
-      inputs[t].resize(Config::NumElements);
-      for (uint32_t i = 0; i < Config::NumElements; ++i) {
-        float val = dist(rng);
-        inputs[t][i] = val;
-      }
+    else
+    {
+        for (uint32_t t = 0; t < trials; ++t)
+        {
+            auto &v = out[t];
+            for (float &x : v)
+            {
+                x = dist(rng);
+            }
+        }
     }
-  }
 }
 
 // ------------------------------------------------------------------------------------------------
 // Main function
+
 int main()
 {
-  //--------------------------------------
-  // RadixSort
+    // Run two passes/scenarios: random input and mostly-sorted input
+    struct Scenario
+    {
+        const char *label;
+        bool mostlySorted;
+    };
+    const Scenario scenarios[2] = {{"Random Input", false}, {"Mostly-Sorted Input", true}};
 
-  // Input and output arrays
-  std::vector<std::vector<float>> trialInputsRadix;
-  std::vector<float> radixOut(Config::NumElements);
-  generateInputElements(trialInputsRadix);
+    std::vector<std::vector<float>> inputsStd, inputsRadix;
+    inputsStd.reserve(kMaxTrials);
+    inputsRadix.reserve(kMaxTrials);
 
-  // Start benchmark
-  auto startRadix = std::chrono::high_resolution_clock::now();
+    // For each scenario, print a table:
+    for (auto &s : scenarios)
+    {
+        // Print header
+        std::cout << "\n=== " << s.label << " (million elements/sec) ===\n";
 
-  for (uint32_t t = 0; t < Config::NumTrials; ++t) {
-    RadixSort11(trialInputsRadix[t].data(), radixOut.data(),
-                Config::NumElements);
-  }
+        // single‐row header, widths tuned to fit content
+        std::cout << std::fixed << std::setprecision(2) << std::setw(12) << "Elements" << std::setw(16) << "std::sort"
+                  << std::setw(16) << "Radix" << std::setw(12) << "Speedup"
+                  << "\n";
 
-  // End benchmark
-  auto endRadix = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> durationRadix = endRadix - startRadix;
-  double radix_eps =
-      (Config::NumElements * Config::NumTrials) / durationRadix.count();
+        // sizes 2^1 .. 2^24
+        for (int e = 1; e <= 24; ++e)
+        {
+            uint32_t N = 1u << e;
+            // cap trials to keep the time reasonable
+            uint32_t trials = std::min(kMaxTrials, std::max(1u, kMaxTotal / N));
 
-  // Optionally, check correctness
-  if (Config::CheckCorrectness) {
-    for (uint32_t i = 1; i < Config::NumElements; i++) {
-      if (radixOut[i - 1] > radixOut[i]) {
-        std::cout << "Radix sort wrong at " << i << "\n";
-        break;
-      }
+            // generate inputs for this scenario
+            generateInputs(trials, N, s.mostlySorted, inputsStd);
+            generateInputs(trials, N, s.mostlySorted, inputsRadix);
+
+            // output buffer for radix
+            std::vector<float> radixOut(N);
+
+            // --- std::sort
+            auto t0 = std::chrono::high_resolution_clock::now();
+            for (uint32_t t = 0; t < trials; ++t)
+            {
+                std::sort(inputsStd[t].begin(), inputsStd[t].end());
+            }
+            auto t1 = std::chrono::high_resolution_clock::now();
+
+            double durStd = std::chrono::duration<double>(t1 - t0).count();
+            double epsStd = double(N) * trials / durStd / 1e6;
+
+            if (kCheckCorrect)
+            {
+                if (!std::is_sorted(inputsStd.back().begin(), inputsStd.back().end()))
+                    std::cerr << "std::sort failed at N=" << N << "\n";
+            }
+
+            // --- RadixSort11
+            t0 = std::chrono::high_resolution_clock::now();
+            for (uint32_t t = 0; t < trials; ++t)
+            {
+                RadixSort11(inputsRadix[t].data(), radixOut.data(), N);
+            }
+            t1 = std::chrono::high_resolution_clock::now();
+
+            double durRadix = std::chrono::duration<double>(t1 - t0).count();
+            double epsRadix = double(N) * trials / durRadix / 1e6;
+
+            if (kCheckCorrect)
+            {
+                if (!std::is_sorted(radixOut.begin(), radixOut.end()))
+                    std::cerr << "RadixSort11 failed at N=" << N << "\n";
+            }
+
+            double speedup = epsRadix / epsStd;
+
+            // print row
+            std::cout << std::setw(12) << N << std::setw(16) << epsStd << std::setw(16) << epsRadix << std::setw(11)
+                      << speedup << "x\n";
+        }
     }
-  }
 
-  //--------------------------------------
-  // std::sort
-
-  // Generate input
-  std::vector<std::vector<float>> trialInputsStd;
-  generateInputElements(trialInputsStd);
-
-  // Start benchmark
-  auto startStd = std::chrono::high_resolution_clock::now();
-
-  for (uint32_t t = 0; t < Config::NumTrials; ++t) {
-    std::sort(trialInputsStd[t].begin(), trialInputsStd[t].end());
-  }
-
-  // End benchmark
-  auto endStd = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> durationStd = endStd - startStd;
-  double std_eps =
-      (Config::NumElements * Config::NumTrials) / durationStd.count();
-
-  // Optionally, check correctness
-  if (Config::CheckCorrectness) {
-    for (uint32_t i = 1; i < Config::NumElements; i++) {
-      if (trialInputsStd[Config::NumTrials - 1][i - 1] >
-          trialInputsStd[Config::NumTrials - 1][i]) {
-        std::cout << "std::sort wrong at " << i << "\n";
-        break;
-      }
-    }
-  }
-
-  //--------------------------------------
-  // Print results
-
-  double speedup = std_eps > 0.0 ? radix_eps / std_eps : 0.0;
-
-  std::cout << std::fixed << std::setprecision(2);
-  std::cout << std::fixed << std::setprecision(2);
-  std::cout << "[RadixSort11] " << Config::NumElements
-            << " elements: " << (radix_eps / 1'000'000.0)
-            << " M elements/sec\n";
-  std::cout << "[std::sort]   " << Config::NumElements
-            << " elements: " << (std_eps / 1'000'000.0) << " M elements/sec\n";
-
-  std::cout << "RadixSort11 is " << speedup << "x faster than std::sort\n";
-
-  return 0;
+    return 0;
 }
